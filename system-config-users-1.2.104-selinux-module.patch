@@ -1,0 +1,165 @@
+From dc7d757ebd8827013523294e4870869b92d0a55a Mon Sep 17 00:00:00 2001
+From: Nils Philippsen <nils@redhat.com>
+Date: Wed, 9 Feb 2011 17:16:54 +0100
+Subject: [PATCH] patch: selinux-module
+
+Squashed commit of the following:
+
+commit ec97c3c9add05d756cb06f92bddaf4d3468261f9
+Author: Nils Philippsen <nils@redhat.com>
+Date:   Mon Jan 31 12:16:10 2011 +0100
+
+    remove obsolete selinux module
+
+    presence of this module blocks use of system-wide one (#646876)
+    (cherry picked from commit b3fc3280cda4f69884b31f8103344092e4eeb8d4)
+
+    Signed-off-by: Nils Philippsen <nils@redhat.com>
+---
+ src/selinux.py |  134 --------------------------------------------------------
+ 1 files changed, 0 insertions(+), 134 deletions(-)
+ delete mode 100644 src/selinux.py
+
+diff --git a/src/selinux.py b/src/selinux.py
+deleted file mode 100644
+index 9e16338..0000000
+--- a/src/selinux.py
++++ /dev/null
+@@ -1,134 +0,0 @@
+-# -*- coding: utf-8 -*-
+-#
+-# selinux.py - event handling code for selinux properties in
+-#              system-config-users
+-# Copyright © 2003 - 2007 Red Hat, Inc.
+-# Copyright © 2003 Dan Walsh <dwalsh@redhat.com>
+-#
+-# This program is free software; you can redistribute it and/or modify
+-# it under the terms of the GNU General Public License as published by
+-# the Free Software Foundation; either version 2 of the License, or
+-# (at your option) any later version.
+-#
+-# This program is distributed in the hope that it will be useful,
+-# but WITHOUT ANY WARRANTY; without even the implied warranty of
+-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-# GNU General Public License for more details.
+-#
+-# You should have received a copy of the GNU General Public License
+-# along with this program; if not, see <http://www.gnu.org/licenses/>.
+-#
+-# Authors:
+-# Dan Walsh <swalsh@redhat.com>
+-# Brent Fox <bfox@redhat.com>
+-# Nils Philippsen <nils@redhat.com>
+-
+-import gtk
+-import gobject
+-import commands
+-import string
+-class properties:
+-    def __init__(self, parent, xml):
+-        self.rolesCheckbox = xml.get_widget('rolesCheckbutton')
+-        self.availableRolesTreeView = xml.get_widget('availableRolesTreeview')
+-        self.setupTreeview(self.availableRolesTreeView,self.addRole)
+-
+-        self.selinux_enabled = (self.initAvailableRoles() == 0)
+-        if not self.selinux_enabled:
+-            self.rolesCheckbox.set_active(False)
+-            self.rolesCheckbox.set_sensitive(False)
+-        self.assignedRolesTreeView = xml.get_widget('assignedRolesTreeview')
+-        self.setupTreeview(self.assignedRolesTreeView,self.removeRole)
+-        
+-        self.addRoleButton = xml.get_widget('addRoleButton')
+-        self.addRoleButton.connect("clicked", self.addRole)
+-        self.removeRoleButton = xml.get_widget('removeRoleButton')
+-        self.removeRoleButton.connect("clicked", self.removeRole)
+-        self.rolesCheckbox.connect("toggled", self.toggled_roles)
+-        self.toggled_roles(self.rolesCheckbox)
+-
+-    def init(self,user):
+-        model=self.assignedRolesTreeView.get_model()
+-        model.clear()
+-        (status,msg)=commands.getstatusoutput("seuser show users %s" % user)
+-        if status==0:
+-            self.rolesCheckbox.set_active(True)
+-            rolestring=msg.strip().split(":")[1]
+-            roles=rolestring.split()
+-            roles.sort()
+-            for role in roles:
+-                iter = model.append()
+-                model.set (iter, 0, role)
+-        else:
+-            self.rolesCheckbox.set_active(False)
+-        
+-    def initAvailableRoles(self):
+-        model = self.availableRolesTreeView.get_model ()
+-        out=commands.getstatusoutput("seuser show roles")
+-        if out[0]==0:
+-            for i in out[1].split():
+-                iter = model.append()
+-                model.set (iter, 0, i)
+-            self.availableRolesTreeView.get_selection ().select_path ((0,))
+-        return out[0]
+-        
+-    def addRole(self,*args):
+-        result = self.availableRolesTreeView.get_selection().get_selected()
+-        if result != None:
+-            (model, iter) = result
+-            if iter != None:
+-                role = model.get_value (iter, 0)
+-                model=self.assignedRolesTreeView.get_model()
+-                roles=self.getRoles()
+-                if role not in roles:
+-                    iter = model.append()
+-                    model.set (iter, 0, role)
+-            
+-    def getRoles(self):
+-        if not self.selinux_enabled:
+-            return []
+-        m=self.assignedRolesTreeView.get_model()
+-        l=[]
+-        def getList(model, path, iter, text):
+-            l.append(model.get_value(iter,0))
+-        m.foreach (getList, None)
+-        return l
+-                     
+-    def saveRoles(self,user, roles):
+-        if not self.selinux_enabled:
+-            return (0,"")
+-        if len(roles) == 0:
+-            return commands.getstatusoutput("seuser delete -N %s" % (user))
+-            
+-        r= string.join(roles,",")
+-        result=commands.getstatusoutput("seuser change -N -R %s %s" % (r, user))
+-        if result[0] != 0:
+-            result=commands.getstatusoutput("seuser add -N -R %s %s" % (r, user))
+-        return result
+-    
+-    def removeRole(self,*args):
+-        result = self.assignedRolesTreeView.get_selection().get_selected()
+-        if result != None:
+-            (model, iter) = result
+-            if iter != None:
+-                model.remove (iter)
+-                
+-        
+-    def setupTreeview(self,tv,activateFunc):
+-        model = gtk.ListStore (gobject.TYPE_STRING)
+-        tv.set_model (model)
+-        column = gtk.TreeViewColumn (None, gtk.CellRendererText(), text=0)
+-        tv.append_column (column)
+-        model.set_sort_column_id(0, gtk.SORT_ASCENDING)
+-        tv.connect("row_activated",activateFunc)
+-        
+-    def toggled_roles(self, data):
+-        active=data.get_active();
+-        self.availableRolesTreeView.set_sensitive(active)
+-        self.assignedRolesTreeView.set_sensitive(active)
+-        self.addRoleButton.set_sensitive(active)
+-        self.removeRoleButton.set_sensitive(active)
+-        
+-    def enabled(self):
+-        return self.selinux_enabled
+-        
+-- 
+1.7.4
+

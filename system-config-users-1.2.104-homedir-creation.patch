@@ -1,0 +1,175 @@
+From 527e7c99e0926125512d11f6a4b7caadc7fbbef2 Mon Sep 17 00:00:00 2001
+From: Nils Philippsen <nils@redhat.com>
+Date: Tue, 25 Jan 2011 15:22:56 +0100
+Subject: [PATCH] patch: homedir-creation
+
+Squashed commit of the following:
+
+commit 0c53083888942d65694d3eb676351382366d6f87
+Author: Nils Philippsen <nils@redhat.com>
+Date:   Mon Nov 29 16:23:43 2010 +0100
+
+    restore context of home directories after creating
+
+    also use umask of 0700 (u=rwx,go=)
+    amends commit d76a8c7dcde7a9309676f25f13ff0961f7a169fc
+    (cherry picked from commit 1b6555d60789838ddf0980406f58449753d4457a)
+
+    Signed-off-by: Nils Philippsen <nils@redhat.com>
+
+commit 4c24adaff5a1df9d031b86c22a4a11cf8390d6ad
+Author: Nils Philippsen <nils@redhat.com>
+Date:   Tue Sep 7 17:39:11 2010 +0200
+
+    cope better with deleting auto-mounted home directories
+
+    Auto-mounted home directories cannot be removed normally, the automounter
+    needs to be reconfigured for that. In that case, remove the contents and
+    change ownership back to root.
+    (cherry picked from commit 5fcefe54e19760559ef425205c434e94f8bbd524)
+
+    Signed-off-by: Nils Philippsen <nils@redhat.com>
+
+commit 58e7e71807726af1b9797f54c51bf98cc0d58456
+Author: Nils Philippsen <nils@redhat.com>
+Date:   Tue Sep 7 16:55:33 2010 +0200
+
+    Attempt to mkdir home directory instead of using os.access().
+
+    The access system call may erroneously assume that a directory is writable
+    (e.g. in autofs roots, procsfs, sysfs, ...). Rather than special-casing
+    affected file systems, simply try to create the home directory -- libuser
+    copes well with existing directories.
+    (cherry picked from commit d76a8c7dcde7a9309676f25f13ff0961f7a169fc)
+
+    Signed-off-by: Nils Philippsen <nils@redhat.com>
+---
+ src/mainWindow.py        |   30 +++++++++++++++++++-----------
+ src/userGroupCheck.py    |   26 +++++++++++++++++++++-----
+ system-config-users.spec |    1 +
+ 3 files changed, 41 insertions(+), 16 deletions(-)
+
+diff --git a/src/mainWindow.py b/src/mainWindow.py
+index 5baa992..b02462f 100755
+--- a/src/mainWindow.py
++++ b/src/mainWindow.py
+@@ -705,9 +705,9 @@ class mainWindow:
+                     #Ok, we're going to delete the user
+                     if filesDeleteCheckButton and filesDeleteCheckButton.get_active() == 1:
+                         #Let's delete the home directory too
+-                        self.rmrf(homeDir)
++                        self.rmhomedir(homeDir)
+                         if os.access (mailSpool, os.W_OK) and os.lstat (mailSpool).st_uid == uid:
+-                            self.rmrf(mailSpool)
++                            os.remove(mailSpool)
+                         self.rmtmpfiles (("/tmp", "/var/tmp"), uid)
+                     self.ADMIN.deleteUser(userEnt)
+                     dlg.destroy()
+@@ -870,24 +870,32 @@ class mainWindow:
+         else:
+             self.preferences['PREFER_SAME_UID_GID'] = False
+             
+-    def rmrf(self, path):
++    def rmhomedir(self, path):
+         # only allow absolute paths to be deleted
+         if not os.path.isabs(path):
+-            raise RuntimeError("rmrf(): path must be absolute")
++            raise RuntimeError("rmhomedir(): path must be absolute")
+ 
+         path = os.path.abspath (path)
+         pathcomps = path.split (os.path.sep)
+ 
++        def onerror_chown_homedir(errfunc, errpath, exc_info):
++            if errfunc == os.rmdir and errpath == path:
++                # If just rmdir() on the actual home directory entry failed,
++                # assume that it's e.g. an automounted home directory which
++                # can't be removed normally (automounter needs to be
++                # reconfigured for that). In this case, change ownership back
++                # to root.
++                os.chown(path, 0, 0)
++            else:
++                # In all other cases, re-raise the exception
++                raise
++
+         # Don't allow the system root or anything beneath /dev to be deleted
+         if path != os.path.sep and len (pathcomps) >= 2 and pathcomps[1] != "dev" \
+                 and os.path.lexists (path):
+-            try:
+-                os.remove (path)
+-            except OSError:
+-                # possibly a directory
+-                shutil.rmtree (path)
+-            except:
+-                raise
++            # ignore errors because the home directory may be an auto-mounted
++            # directory which can't be removed with normal means
++            shutil.rmtree (path, onerror=onerror_chown_homedir)
+ 
+     def do_rm_userowned (self, path, uid):
+         if os.path.isdir (path) and not os.path.islink (path):
+diff --git a/src/userGroupCheck.py b/src/userGroupCheck.py
+index ea482cc..9f9612b 100644
+--- a/src/userGroupCheck.py
++++ b/src/userGroupCheck.py
+@@ -23,6 +23,7 @@
+ # Nils Philippsen <nils@redhat.com>
+ 
+ import os
++import errno
+ import string
+ import libuser
+ import messageDialog
+@@ -42,6 +43,8 @@ try:
+ except ImportError:
+     pass
+ 
++import selinux
++
+ maxusernamelength = libuser.UT_NAMESIZE - 1
+ maxgroupnamelength = libuser.UT_NAMESIZE - 1
+ maxfilenamelength = os.pathconf ('/', os.pathconf_names['PC_NAME_MAX'])
+@@ -237,11 +240,24 @@ def isHomedirOk(candidate, widget, need_homedir = True):
+ 
+     parent_dir = "/".join(str_split[:-1]) or "/"
+ 
+-    if need_homedir and not os.access(parent_dir, os.W_OK):
+-        messageDialog.show_message_dialog (_("The directory name '%s' cannot be created ('%s' is not writable). Please chose a writable location.") % (candidate, parent_dir))
+-        widget.set_text("")
+-        widget.grab_focus()
+-        return False
++    if need_homedir:
++        # os.access() sometimes says a directory is writable, but it's not
++        # (autofs roots, procfs, sysfs, ...), so simply attempt to create it.
++        try:
++            os.mkdir(candidate, 0700)
++        except Exception, exc:
++            # Ignore if the directory exists already.
++            if not (isinstance(exc, OSError) and exc.errno == errno.EEXIST):
++                messageDialog.show_message_dialog(
++                        _("The directory name '%s' cannot be created "
++                          "('%s' is not writable). Please chose a writable "
++                          "location.") % (candidate, parent_dir))
++                widget.set_text("")
++                widget.grab_focus()
++                return False
++        else:
++            if selinux.is_selinux_enabled():
++                selinux.restorecon(candidate)
+ 
+     return True
+ 
+diff --git a/system-config-users.spec b/system-config-users.spec
+index 7df5df3..4627ec6 100644
+--- a/system-config-users.spec
++++ b/system-config-users.spec
+@@ -82,6 +82,7 @@ Requires: cracklib-python >= 2.8.6
+ Requires: cracklib >= 2.8.6
+ %endif
+ %endif
++Requires: libselinux-python
+ 
+ BuildRequires: python >= 2.0
+ 
+-- 
+1.7.3.5
+

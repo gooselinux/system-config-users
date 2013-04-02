@@ -36,13 +36,15 @@
 Summary: A graphical interface for administering users and groups
 Name: system-config-users
 Version: 1.2.104
-Release: 1%{?dist}
+Release: 1%{?dist}.3
 URL: http://fedorahosted.org/%{name}
 License: GPLv2+
 Group: Applications/System
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 BuildArch: noarch
 Source: http://fedorahosted.org/released/%{name}/%{name}-%{version}.tar.bz2
+Patch0: system-config-users-1.2.104-homedir-creation.patch
+Patch1: system-config-users-1.2.104-selinux-module.patch
 BuildRequires: desktop-file-utils
 BuildRequires: gettext
 BuildRequires: intltool
@@ -82,6 +84,7 @@ Requires: cracklib-python >= 2.8.6
 Requires: cracklib >= 2.8.6
 %endif
 %endif
+Requires: libselinux-python
 
 BuildRequires: python >= 2.0
 
@@ -91,6 +94,9 @@ users and groups.  It depends on the libuser library.
 
 %prep
 %setup -q
+%patch0 -p1 -b .homedir-creation
+# no backup, this patch only removes a file
+%patch1 -p1
 
 %build
 make %{?with_console_util:CONSOLE_USE_CONFIG_UTIL=1} %{?_smp_mflags}
@@ -122,6 +128,15 @@ rm -rf $RPM_BUILD_ROOT
 %config(noreplace) %{_sysconfdir}/sysconfig/system-config-users
 
 %changelog
+* Fri Feb 11 2011 Nils Philippsen <nils@redhat.com> - 1.2.104-1%{?dist}.3
+- require libselinux-python
+
+* Wed Feb 09 2011 Nils Philippsen <nils@redhat.com> - 1.2.104-1%{?dist}.2
+- remove obsolete selinux module
+
+* Wed Jan 26 2011 Nils Philippsen <nils@redhat.com> - 1.2.104-1%{?dist}.1
+- cope better with uncreatable home directory locations (#672822)
+
 * Wed Aug 11 2010 Nils Philippsen <nils@redhat.com> - 1.2.104-1
 - pick up translation updates
 
